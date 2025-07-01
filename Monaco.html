@@ -1,0 +1,780 @@
+﻿<!DOCTYPE html>
+<html lang="en" xmlns="http://www.w3.org/1999/xhtml">
+<head>
+    <style type="text/css">
+        @font-face {
+            font-family: 'Segoe UI';
+            src: url('Fonts/SegoeUI.ttf') format('truetype');
+        }
+
+        :root {
+            --url: url("");
+        }
+
+        html, body {
+            background-color: #0f0f0f;
+            width: 100%;
+            height: 100%;
+            margin: 0;
+            padding: 0;
+            overflow: hidden;
+            font-family: 'Segoe UI', sans-serif;
+            color: #0f0f0f;
+        }
+
+        .editor-container {
+            width: 100%;
+            height: 100%;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .tabs-container {
+            background-color: #000000;
+            display: flex;
+            height: 35px;
+            overflow-x: auto;
+            border-bottom: 1px solid #333;
+            gap: 0;
+        }
+
+        .tab {
+            display: flex;
+            align-items: center;
+            padding: 0 15px;
+            background-color: #000000;
+            color: #969696;
+            border-right: 1px solid #1e1e1e;
+            min-width: 120px;
+            max-width: 200px;
+            position: relative;
+            cursor: pointer;
+            transition: background-color 0.2s, color 0.2s;
+            user-select: none;
+        }
+
+        .tab.active {
+            background-color: #0F0F0F;
+            color: #ffffff;
+        }
+
+        .tab-icon {
+            width: 20px;
+            height: 20px;
+            margin-right: 8px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            position: relative;
+            top: 2px;
+        }
+
+        .tab-icon svg {
+            width: 16px;
+            height: 16px;
+        }
+
+        .tab-title {
+            flex-grow: 1;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            font-size: 13px;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, 'Open Sans', 'Helvetica Neue', sans-serif;
+        }
+
+        .tab-title.editing {
+            background: #3d3d3d;
+            border: 1px solid #525252;
+            padding: 2px 4px;
+            border-radius: 3px;
+            outline: none;
+        }
+
+        .tab-close {
+            margin-left: 8px;
+            opacity: 0.7;
+            transition: opacity 0.2s;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            width: 16px;
+            height: 16px;
+            border-radius: 3px;
+        }
+
+        .tab-close:hover {
+            opacity: 1;
+            background-color: rgba(255, 255, 255, 0.1);
+        }
+
+        .tab.new-tab {
+            min-width: 10px;
+            max-width: 10px;
+            justify-content: center;
+            background-color: transparent;
+            border: none;
+            margin-left: -2px;
+        }
+
+        .tab.new-tab:hover {
+            background-color: rgba(255, 255, 255, 0.1);
+        }
+
+        @keyframes tabAppear {
+            from {
+                opacity: 0;
+                transform: translateY(-10px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        @keyframes tabRemove {
+            to {
+                opacity: 0;
+                transform: translateX(-10px);
+            }
+        }
+
+        .tab.new {
+            animation: tabAppear 0.2s ease-out;
+        }
+
+        .tab.removing {
+            animation: tabRemove 0.2s ease-out;
+        }
+    </style>
+    <meta charset="utf-8" />
+    <title>Monaco Editor with Tabs and Auto-Correct</title>
+</head>
+<body>
+    <div class="editor-container">
+        <div id="tabs-container" class="tabs-container"></div>
+        <div id="container" style="width:100%;height:calc(100% - 35px);"></div>
+    </div>
+    <script src="vs/loader.js"></script>
+    <script type="text/javascript">
+        require.config({
+            paths: {
+                'vs': 'vs'
+            }
+        });
+
+        // API
+        var GetText;
+        var SetText;
+        var SetTheme;
+        var SetScroll;
+        var ShowErr;
+        var Refresh;
+
+        // Enablers
+        var SwitchMinimap;
+        var SwitchReadonly;
+        var SwitchRenderWhitespace;
+        var SwitchLinks;
+        var SwitchLineHeight;
+        var SwitchFontSize;
+        var SwitchFolding;
+        var SwitchAutoIndent;
+        var SwitchFontFamily;
+        var SwitchFontLigatures;
+        var AddIntellisense;
+
+        // Variables
+        var editor;
+        var Proposals = [];
+        let currentTab = null;
+        let tabs = [];
+
+        const luaIcon = `<img src="luaicon.png" alt="Lua Icon" style="width: 20px; height: 20px;" />`;
+
+        class Tab {
+            constructor(title, content = '') {
+                this.id = 'tab-' + Math.random().toString(36).substr(2, 9);
+                this.title = title;
+                this.content = content;
+                this.element = null;
+            }
+        }
+
+        function saveTabs() {
+            const tabsData = tabs.map(tab => ({
+                id: tab.id,
+                title: tab.title,
+                content: tab.content
+            }));
+            localStorage.setItem('editorTabs', JSON.stringify(tabsData));
+        }
+
+        function loadTabs() {
+            const savedTabs = localStorage.getItem('editorTabs');
+            if (savedTabs) {
+                const tabsData = JSON.parse(savedTabs);
+                tabsData.forEach(tabData => {
+                    addTab(tabData.title, tabData.content, tabData.id);
+                });
+            } else {
+                addTab('New Tab 1');
+            }
+        }
+
+        function makeEditable(titleElement, tab) {
+            titleElement.contentEditable = true;
+            titleElement.classList.add('editing');
+            titleElement.focus();
+
+            const range = document.createRange();
+            range.selectNodeContents(titleElement);
+            const sel = window.getSelection();
+            sel.removeAllRanges();
+            sel.addRange(range);
+
+            function finishEditing() {
+                titleElement.contentEditable = false;
+                titleElement.classList.remove('editing');
+                const newTitle = titleElement.textContent.trim();
+                if (newTitle) {
+                    tab.title = newTitle;
+                } else {
+                    titleElement.textContent = tab.title;
+                }
+            }
+
+            titleElement.onblur = finishEditing;
+            titleElement.onkeydown = (e) => {
+                if (e.key === 'Enter') {
+                    e.preventDefault();
+                    finishEditing();
+                }
+                if (e.key === 'Escape') {
+                    titleElement.textContent = tab.title;
+                    finishEditing();
+                }
+            };
+        }
+
+        function createTabElement(tab) {
+            const tabElement = document.createElement('div');
+            tabElement.className = 'tab new';
+            tabElement.setAttribute('data-tab-id', tab.id);
+
+            const iconElement = document.createElement('div');
+            iconElement.className = 'tab-icon';
+            iconElement.innerHTML = luaIcon;
+
+            const titleElement = document.createElement('div');
+            titleElement.className = 'tab-title';
+            titleElement.textContent = tab.title;
+
+            titleElement.ondblclick = (e) => {
+                e.stopPropagation();
+                makeEditable(titleElement, tab);
+            };
+
+            const closeButton = document.createElement('div');
+            closeButton.className = 'tab-close';
+            closeButton.innerHTML = '✕';
+            closeButton.onclick = (e) => {
+                e.stopPropagation();
+                if (tabs.length > 1) {
+                    removeTab(tab.id);
+                }
+            };
+
+            tabElement.appendChild(iconElement);
+            tabElement.appendChild(titleElement);
+            tabElement.appendChild(closeButton);
+
+            tabElement.onclick = () => switchTab(tab.id);
+
+            return tabElement;
+        }
+
+        function createNewTabButton() {
+            const newTabButton = document.createElement('div');
+            newTabButton.className = 'tab new-tab';
+            newTabButton.innerHTML = '+';
+            newTabButton.onclick = () => {
+                const newTab = addTab('New Tab ' + (tabs.length + 1));
+            };
+            return newTabButton;
+        }
+
+        function addTab(title, content = '', id = null) {
+            const tab = new Tab(title, content);
+            if (id) tab.id = id;
+            tabs.push(tab);
+
+            const tabsContainer = document.getElementById('tabs-container');
+            const newTabButton = tabsContainer.querySelector('.new-tab');
+
+            tab.element = createTabElement(tab);
+            if (newTabButton) {
+                tabsContainer.insertBefore(tab.element, newTabButton);
+            } else {
+                tabsContainer.appendChild(tab.element);
+                tabsContainer.appendChild(createNewTabButton());
+            }
+
+            switchTab(tab.id);
+            saveTabs();
+            return tab;
+        }
+
+        function removeTab(tabId) {
+            const tabIndex = tabs.findIndex(t => t.id === tabId);
+            if (tabIndex === -1) return;
+
+            if (tabs.length <= 1) return;
+
+            const tab = tabs[tabIndex];
+            tab.element.classList.add('removing');
+
+            setTimeout(() => {
+                tabs.splice(tabIndex, 1);
+                tab.element.remove();
+
+                if (currentTab === tabId) {
+                    switchTab(tabs[Math.min(tabIndex, tabs.length - 1)].id);
+                }
+                saveTabs();
+            }, 200);
+        }
+
+        function switchTab(tabId) {
+            const tab = tabs.find(t => t.id === tabId);
+            if (!tab) return;
+
+            tabs.forEach(t => {
+                if (t.element) {
+                    t.element.classList.remove('active');
+                }
+            });
+
+            if (currentTab !== tabId) {
+                if (currentTab) {
+                    const oldTab = tabs.find(t => t.id === currentTab);
+                    if (oldTab) {
+                        oldTab.content = editor.getValue();
+                        saveTabs();
+                    }
+                }
+
+                editor.setValue(tab.content);
+                tab.element.classList.add('active');
+                currentTab = tabId;
+            }
+        }
+
+        function setupAutosave() {
+            let saveTimeout;
+            editor.onDidChangeModelContent(() => {
+                clearTimeout(saveTimeout);
+                saveTimeout = setTimeout(() => {
+                    if (currentTab) {
+                        const tab = tabs.find(t => t.id === currentTab);
+                        if (tab) {
+                            tab.content = editor.getValue();
+                            saveTabs();
+                        }
+                    }
+                }, 1000);
+            });
+        }
+
+        require(['vs/editor/editor.main'], function () {
+            function getDependencyProposals() {
+                let newProposals = [];
+                for (let index = 0; index < Proposals.length; index++) {
+                    const element = Proposals[index];
+                    let newElement = {}
+                    for (const key in element) {
+                        if (key == "__children__") {
+                            continue;
+                        };
+                        newElement[key] = element[key];
+                    }
+                    newProposals.push(newElement)
+                }
+                return newProposals;
+            }
+
+            monaco.languages.registerCompletionItemProvider('lua', {
+                provideCompletionItems: function (model, position) {
+                    return {
+                        suggestions: getDependencyProposals(),
+                    };
+                },
+                triggerCharacters: ['.', ':', '"'],
+            });
+
+            monaco.editor.defineTheme('net-theme-light', {
+                base: 'vs',
+                inherit: true,
+                rules: [
+                    { token: 'global', foreground: '000000' },
+                    { token: 'keyword', foreground: '569CD6' },
+                    { token: 'comment', foreground: '6A9955' },
+                    { token: 'number', foreground: 'B5CEA8' },
+                    { token: 'string', foreground: 'ff8c3a' },
+                ]
+            });
+
+            monaco.editor.defineTheme('net-theme-dark', {
+                base: 'vs-dark',
+                inherit: true,
+                rules: [
+                    { token: 'global', foreground: 'FFFFFF', fontStyle: "bold" },
+                    { token: 'keyword', foreground: '569CD6', fontStyle: "bold" },
+                    { token: 'comment', foreground: '6A9955' },
+                    { token: 'number', foreground: 'B5CEA8' },
+                    { token: 'string', foreground: 'CE9178' },
+                ]
+            });
+
+            monaco.editor.defineTheme('Zorara', {
+                base: 'vs-dark',
+                inherit: true,
+                rules: [
+                    { token: '', foreground: '#ffffff' },
+                    { token: 'variable.language.self', foreground: '#688df2' },
+                    { token: 'variable.parameter.variadic', foreground: '#688df2' },
+                    { token: 'variable.parameter.function', foreground: '#688df2' },
+                    { token: 'variable.other.constant', foreground: '#688df2' },
+                    { token: 'variable.property', foreground: '#688df2' },
+                    { token: 'variable.object.property', foreground: '#688df2' },
+
+                    { token: 'keyword', foreground: '#5b84b0' },
+                    { token: 'keyword.local', foreground: '#5b84b0', fontStyle: 'bold' },
+                    { token: 'keyword.operator', foreground: '#92b1f0' },
+                    { token: 'keyword.operator.type.annotation', foreground: '#5b84b0' },
+                    { token: 'keyword.operator.typedef.annotation', foreground: '#5b84b0' },
+                    { token: 'keyword.control.export', foreground: '#5b84b0', fontStyle: 'italic' },
+
+                    { token: 'operator', foreground: '#688df2' },
+                    { token: 'operator.type', foreground: '#688df2' },
+                    { token: 'operator.special', foreground: '#688df2' },
+
+                    { token: 'entity.name.type.alias', foreground: '#4e75c9' },
+                    { token: 'entity.name.function', foreground: '#99aee8', fontStyle: 'bold' },
+
+                    { token: 'global', foreground: '#688df2' },
+
+                    { token: 'storage.type', foreground: '#688df2' },
+
+                    { token: 'comment', foreground: '#8fc1eb' },
+                    { token: 'comment.highlight.title', foreground: '#8fc1eb', fontStyle: 'italic' },
+                    { token: 'comment.highlight.name', foreground: '#8fc1eb', fontStyle: 'italic' },
+                    { token: 'comment.delimiter.modifier', foreground: '#8fc1eb', fontStyle: 'italic' },
+                    { token: 'comment.highlight.modifier', foreground: '#8fc1eb', fontStyle: 'italic' },
+                    { token: 'comment.highlight.descriptor', foreground: '#8fc1eb', fontStyle: 'italic' },
+
+                    { token: 'delimiter.longstring', foreground: '#a5c0fa' },
+                    { token: 'delimiter.bracket', foreground: '#9cc2ff' },
+                    { token: 'delimiter.array', foreground: '#9cc2ff' },
+                    { token: 'delimiter.parenthesis', foreground: '#9cc2ff' },
+                    { token: 'delimiter', foreground: '#66b2e8' },
+
+                    { token: 'string', foreground: '#93b4fa' },
+                    { token: 'longstring', foreground: '#93b4fa' },
+                    { token: 'string.delimeter', foreground: '#93b4fa' },
+                    { token: 'string.escape', foreground: '#93b4fa' },
+
+                    { token: 'punctuation.separator.arguments', foreground: '#93b4fa' },
+                    { token: 'punctuation.separator.parameter', foreground: '#93b4fa' },
+                    { token: 'punctuation.separator.table', foreground: '#93b4fa' },
+                    { token: 'punctuation.definition.block', foreground: '#93b4fa' },
+                    { token: 'punctuation.definition.parameters', foreground: '#93b4fa' },
+                    { token: 'punctuation.definition.typeparameters', foreground: '#93b4fa' },
+
+                    { token: 'constant.language', foreground: '#5778de' },
+                    { token: 'number', foreground: '#87cfff' },
+                    { token: 'constants', foreground: '#5778de', fontStyle: 'bold' },
+
+                    { token: 'support.function', foreground: '#5278f2', fontStyle: 'bold' },
+                    { token: 'support.function.library', foreground: '#5278f2' },
+                    { token: 'support.type', foreground: '#5278f2' },
+                ],
+                colors: {
+                    'editor.background': '#0f0f0f',
+                    'editorLineNumber.foreground': '#7A7A7A',
+                    'editorLineNumber.activeForeground': '#BBBBBB',
+                    'editorIndentGuide.background': '#0f0f0f',
+                    'editorSuggestWidget.background': "#0f0f0f",
+                    'editorSuggestWidget.border': "#000000",
+                    'editorSuggestWidget.foreground': "#D5D5D5",
+                    'editorSuggestWidget.selectedBackground': "#2d313a",
+                    'editorSuggestWidget.highlightForeground': "#18A0FB",
+                    'textCodeBlock.background': '#0f0f0f',
+                    'textCodeBlock.selectedBorder': '#0f0f0f',
+                }
+            });
+
+            editor = monaco.editor.create(document.getElementById('container'), {
+                value: '',
+                language: 'lua',
+                theme: "Zorara",
+                fontSize: "15px",
+                fontFamily: "'Segoe UI', monospace",
+                folding: true,
+                dragAndDrop: false,
+                links: true,
+                minimap: {
+                    enabled: false,
+                },
+                showFoldingControls: "always",
+                smoothScrolling: true,
+                stopRenderingLineAfter: 6500,
+                cursorBlinking: "smooth",
+                cursorSmoothCaretAnimation: true,
+                foldingHighlight: false,
+                fontLigatures: true,
+                formatOnPaste: true,
+                showDeprecated: true,
+                suggest: {
+                    snippetsPreventQuickSuggestions: false,
+                },
+                padding: {
+                    top: 10,
+                }
+            });
+
+            loadTabs();
+            setupAutosave();
+
+            // Define auto-correct rules
+            const autoCorrectRules = [
+                { mistake: 'teh', correction: 'the' },
+                { mistake: 'recieve', correction: 'receive' },
+                { mistake: 'adn', correction: 'and' },
+                // Add more rules as needed
+            ];
+
+            // Register code action provider for auto-correct
+            monaco.languages.registerCodeActionProvider('lua', {
+                provideCodeActions: function (model, range, context, token) {
+                    const actions = [];
+                    const text = model.getValueInRange(range);
+
+                    autoCorrectRules.forEach(rule => {
+                        if (text.includes(rule.mistake)) {
+                            actions.push({
+                                title: `Replace '${rule.mistake}' with '${rule.correction}'`,
+                                diagnostics: [],
+                                kind: 'quickfix',
+                                edit: {
+                                    edits: [
+                                        {
+                                            resource: model.uri,
+                                            edit: {
+                                                range: range,
+                                                text: text.replace(rule.mistake, rule.correction)
+                                            }
+                                        }
+                                    ]
+                                },
+                                isPreferred: true
+                            });
+                        }
+                    });
+
+                    return { actions: actions, dispose: () => { } };
+                }
+            });
+
+            window.onresize = function () {
+                editor.layout();
+            };
+
+            Cut = function() {
+                editor.focus();
+                document.execCommand('cut');
+            }
+
+            Copy = function() {
+                editor.focus();
+                document.execCommand('copy');
+            }
+
+            Paste = function() {
+                editor.focus();
+                document.execCommand('paste');
+            }
+
+            Undo = function() {
+                editor.focus();
+                document.execCommand('undo');
+            }
+
+            Redo = function() {
+                editor.focus();
+                document.execCommand('redo');
+            }
+
+            Delete = function() {
+                editor.focus();
+                document.execCommand('delete');
+            }
+
+            SelectAll = function() {
+                editor.focus();
+                document.execCommand('selectAll');
+            }
+
+            GetText = function () {
+                return String(editor.getValue());
+            }
+
+            SetText = function (x) {
+                try {
+                    editor.setValue(JSON.parse(`${String(x)}`));
+                } catch (e) {
+                    editor.setValue(String(x))
+                }
+            }
+
+            GetProposals = function () {
+                return Proposals;
+            }
+
+            OnDidChangeContent = function (callback) {
+                return editor.onDidChangeModelContent((event) => {
+                    callback(editor.getValue());
+                });
+            }
+
+            OnDidChangeCursorPosition = function (callback) {
+                return editor.onDidChangeCursorPosition((event) => {
+                    callback(event.position);
+                });
+            }
+
+            SetTheme = function (themeName) {
+                if (themeName == "Dark") {
+                    monaco.editor.setTheme("net-theme-dark");
+                }
+                if (themeName == "Light") {
+                    monaco.editor.setTheme("net-theme-light");
+                }
+            }
+
+            SwitchMinimap = function (flag) {
+                editor.updateOptions({
+                    minimap: {
+                        enabled: flag,
+                    }
+                });
+            }
+
+            SwitchReadonly = function (flag) {
+                editor.updateOptions({
+                    readOnly: flag,
+                });
+            }
+
+            SwitchRenderWhitespace = function (op) {
+                editor.updateOptions({
+                    renderWhitespace: op,
+                });
+            }
+
+            SwitchLinks = function (flag) {
+                editor.updateOptions({
+                    links: flag,
+                });
+            }
+
+            SwitchLineHeight = function (num) {
+                editor.updateOptions({
+                    lineHeight: num,
+                });
+            }
+
+            SwitchFontSize = function (num) {
+                editor.updateOptions({
+                    fontSize: num,
+                });
+            }
+
+            SwitchFolding = function (flag) {
+                editor.updateOptions({
+                    folding: flag,
+                });
+            }
+
+            SwitchAutoIndent = function (flag) {
+                editor.updateOptions({
+                    autoIndent: flag,
+                });
+            }
+
+            SwitchFontFamily = function (name) {
+                editor.updateOptions({
+                    fontFamily: name,
+                });
+            }
+
+            SwitchFontLigatures = function (flag) {
+                editor.updateOptions({
+                    fontLigatures: flag,
+                });
+            }
+
+            ShowErr = function (line, column, endline, endcolumn, errMessage) {
+                editor.revealPositionInCenter({ lineNumber: line, column: column });
+                editor.deltaDecorations([], [
+                    {
+                        range: new monaco.Range(line, column, endline, endcolumn),
+                        options: {
+                            inlineClassName: 'squiggly-error',
+                            hoverMessage: {
+                                value: errMessage,
+                            }
+                        },
+                    },
+                ]);
+            }
+
+            AddSnippet = function (kindName, snippetName, data) {
+                let snippet = {
+                    insertTextRules: monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet,
+                    kind: monaco.languages.CompletionItemKind[kindName],
+                };
+                for (const key in data) {
+                    let value = data[key];
+                    if (key == "insertText" && typeof value == "object") {
+                        value = value.join("\n");
+                    };
+                    snippet[key] = value;
+                }
+                if (!snippet.label) {
+                    snippet.label = snippetName
+                }
+                if (!snippet.insertText) {
+                    snippet.insertText = snippetName
+                }
+                Proposals.push(snippet);
+            }
+
+            AddRawSnippet = function (data) {
+                Proposals.push(data);
+            }
+
+            SetScroll = function (line) {
+                editor.revealLineInCenter({ lineNumber: line });
+            }
+
+            Refresh = function () {
+                var text = GetText();
+                SetText("");
+                editor.trigger('keyboard', 'type', { text: text });
+            }
+
+        });
+    </script>
+</body>
+</html>
